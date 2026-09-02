@@ -2,17 +2,18 @@
   "name": "swigsplit-backend",
   "version": "0.1.0",
   "private": true,
-  "packageManager": "pnpm@10.0.0",
+  "packageManager": "npm@11.11.0",
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "build": "pnpm --filter @swigsplit/api build && pnpm --filter @swigsplit/worker build",
-    "dev": "pnpm --filter @swigsplit/api start:dev",
-    "start": "pnpm --filter @swigsplit/api start",
-    "start:worker": "pnpm --filter @swigsplit/worker start",
+    "build": "npm run build --workspace=@swigsplit/api && npm run build --workspace=@swigsplit/worker",
+    "dev": "npm run start:dev --workspace=@swigsplit/api",
+    "start": "npm run start --workspace=@swigsplit/api",
+    "start:worker": "npm run start --workspace=@swigsplit/worker",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run tests/integration",
-    "prisma:generate": "pnpm --filter @swigsplit/database prisma:generate",
-    "prisma:migrate": "pnpm --filter @swigsplit/database prisma:migrate"
+    "prisma:generate": "npm run prisma:generate --workspace=@swigsplit/database",
+    "prisma:migrate": "npm run prisma:migrate --workspace=@swigsplit/database"
   },
   "devDependencies": {
     "@nestjs/common": "^11.0.1",
