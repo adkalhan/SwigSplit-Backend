@@ -1,0 +1,29 @@
+{
+  "name": "swigsplit-backend",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "build": "pnpm --filter @swigsplit/api build && pnpm --filter @swigsplit/worker build",
+    "dev": "pnpm --filter @swigsplit/api start:dev",
+    "start": "pnpm --filter @swigsplit/api start",
+    "start:worker": "pnpm --filter @swigsplit/worker start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run tests/integration",
+    "prisma:generate": "pnpm --filter @swigsplit/database prisma:generate",
+    "prisma:migrate": "pnpm --filter @swigsplit/database prisma:migrate"
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/platform-fastify": "^11.0.1",
+    "@nestjs/testing": "^11.0.1",
+    "@types/node": "^22.10.2",
+    "supertest": "^7.0.0",
+    "reflect-metadata": "^0.2.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
