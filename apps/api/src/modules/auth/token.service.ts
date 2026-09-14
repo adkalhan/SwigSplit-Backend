@@ -1,7 +1,7 @@
 import { Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { jwtVerify, SignJWT } from "jose";
-import { ENVIRONMENT } from "../config/config.module.js";
-import type { Environment } from "../config/environment.js";
+import { ENVIRONMENT } from "../../shared/config/config.module.js";
+import type { Environment } from "../../shared/config/environment.js";
 
 export type AccessTokenClaims = { userId: string; sessionId: string };
 

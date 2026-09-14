@@ -1,10 +1,10 @@
 import { ConflictException, Inject, Injectable, Optional } from "@nestjs/common";
 import { Prisma, type User } from "@prisma/client";
 import { PrismaService } from "../../shared/database/prisma.service.js";
-import { TokenService } from "../../shared/auth/token.service.js";
 import type { RegisterInput } from "./auth.schemas.js";
 import { SessionService } from "./session.service.js";
 import { UsersService } from "../users/users.service.js";
+import { TokenService } from "./token.service.js";
 
 export const INVITE_REDEMPTION_PORT = Symbol("INVITE_REDEMPTION_PORT");
 

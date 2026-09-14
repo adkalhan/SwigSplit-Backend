@@ -1,8 +1,8 @@
 import { BadRequestException, Body, Controller, Headers, HttpCode, HttpStatus, Post } from "@nestjs/common";
 import type { ZodType } from "zod";
-import { TokenService } from "../../shared/auth/token.service.js";
 import { AuthService, type AuthResponse } from "./auth.service.js";
 import { refreshSessionSchema, registerSchema } from "./auth.schemas.js";
+import { TokenService } from "./token.service.js";
 
 @Controller("v1/auth")
 export class AuthController {

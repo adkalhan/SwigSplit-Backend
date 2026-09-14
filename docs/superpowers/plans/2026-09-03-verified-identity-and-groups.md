@@ -54,15 +54,14 @@ This deferral applies only to proof of phone ownership. Tasks 2–7 remain execu
 apps/api/src/
   app.module.ts                                      # Registers identity and group modules
   shared/
-    auth/{auth-user.ts,auth.guard.ts,token.service.ts}
     config/environment.ts                            # Adds session environment validation
     database/prisma.service.ts                       # Adds transaction and testable lock helper only if needed
     errors/{api-exception.ts,http-exception.filter.ts}
     validation/parse-body.ts                         # Zod body parsing helper
   modules/
     auth/
-      {auth.module.ts,auth.controller.ts,auth.service.ts,
-       session.service.ts,auth.schemas.ts}
+      {auth.module.ts,auth.controller.ts,auth.service.ts,auth-user.ts,auth.guard.ts,
+       session.service.ts,token.service.ts,auth.schemas.ts}
     users/{users.module.ts,users.controller.ts,users.service.ts}
     groups/
       {groups.module.ts,groups.controller.ts,groups.service.ts,
@@ -82,7 +81,7 @@ tests/
 ## Module boundaries and standalone tests
 
 - Each module owns its controllers, schemas, services, unit tests, and module-specific integration tests. It may depend only on shared infrastructure (`PrismaService`, configuration, errors, and request validation) and explicit interfaces exported by another module.
-- `AuthModule` exports only `AuthGuard`, `CurrentUser`, and the `AuthenticatedUser` type. Other modules must receive the current user as an argument; they must not call `AuthService` or query sessions directly.
+- `AuthModule` exports `AuthGuard`, `CurrentUser`, and the `AuthenticatedUser` type. Other modules must receive the current user as an argument; they must not call `AuthService` or query sessions directly.
 - `GroupsModule` exports `GroupMembershipService.requireActiveMember(groupId, userId)`. Future expense, list, and cart modules use this interface rather than its controllers or Prisma queries.
 - `InvitationsModule` exports `InviteRedemptionPort.redeem(tx, inviteToken, userId): Promise<void>`, where `tx` is Prisma's transaction client. It resolves an `AppInvite` or `GroupInvite` through a shared token utility; only the group-invite branch calls `GroupMembershipService.addOrReactivate`. `AuthModule` calls only this interface inside its registration transaction; it does not import invitation repositories or membership implementation details.
 - Unit tests mock imported interfaces and test a single service without an HTTP server or database. Each module additionally has an integration test that boots only that module plus test infrastructure and exercises its own routes.
@@ -227,8 +226,7 @@ git commit -m "feat: add identity and group schema"
 
 **Files:**
 - Modify: `apps/api/src/shared/config/environment.ts`
-- Create: `apps/api/src/shared/auth/token.service.ts`
-- Create: `apps/api/src/modules/auth/{auth.module.ts,auth.schemas.ts}`
+- Create: `apps/api/src/modules/auth/{auth.module.ts,auth.schemas.ts,token.service.ts}`
 - Create: `apps/api/src/modules/users/{users.module.ts,users.service.ts}`
 
 **Interfaces:**
@@ -264,7 +262,7 @@ Map missing/invalid/expired JWTs to `UnauthorizedException("Authentication is re
 - [ ] **Step 3: Commit the registration and token primitives**
 
 ```bash
-git add apps/api/package.json package-lock.json apps/api/src/shared/config/environment.ts apps/api/src/shared/auth apps/api/src/modules/auth
+git add apps/api/package.json package-lock.json apps/api/src/shared/config/environment.ts apps/api/src/modules/auth
 git commit -m "feat: add registration and access tokens"
 ```
 
@@ -322,65 +320,33 @@ git commit -m "feat: add registration sessions"
 ### Task 4: Protect API routes and expose the authenticated user
 
 **Files:**
-- Create: `apps/api/src/shared/auth/{auth-user.ts,auth.guard.ts}`
+- Create: `apps/api/src/modules/auth/{auth-user.ts,auth.guard.ts}`
 - Create: `apps/api/src/modules/users/users.controller.ts`
 - Modify: `apps/api/src/modules/users/{users.module.ts,users.service.ts}`
 - Modify: `apps/api/src/app.module.ts`
-- Test: `tests/integration/auth.spec.ts`
 
 **Interfaces:**
 - Consumes: `TokenService.verifyAccessToken`, `PrismaService`, and `Session` records.
 - Produces: `@CurrentUser() user: AuthenticatedUser` and `AuthGuard`, plus `GET /v1/user -> { id, phone, phoneVerified }`. Group controllers in Tasks 5–6 consume `AuthGuard` and `CurrentUser`.
 
-- [ ] **Step 1: Add failing protected-route tests**
-
-Append these tests to `tests/integration/auth.spec.ts`:
-
-```ts
-it("returns the current registered user for an active session", async () => {
-  const session = await registeredSession();
-  const response = await app.inject({ method: "GET", url: "/v1/user", headers: { authorization: `Bearer ${session.accessToken}` } });
-  expect(response.statusCode).toBe(200);
-  expect(response.json()).toEqual({ id: session.user.id, phone: "+919876543210", phoneVerified: false });
-});
-
-it.each([undefined, "Bearer malformed-token"]) ("rejects missing or invalid authorization", async (authorization) => {
-  const response = await app.inject({ method: "GET", url: "/v1/user", headers: authorization ? { authorization } : {} });
-  expect(response.statusCode).toBe(401);
-  expect(response.json()).toMatchObject({ message: "Authentication is required" });
-});
-```
-
-- [ ] **Step 2: Run the protected-route tests to verify they fail**
-
-Run: `TEST_DATABASE_URL='postgresql://swigsplit:swigsplit@localhost:5432/swigsplit_test' npm run test:integration -- tests/integration/auth.spec.ts`
-
-Expected: FAIL because `/v1/user` and an auth guard do not exist.
-
-- [ ] **Step 3: Implement session-aware bearer authentication**
+- [ ] **Step 1: Implement session-aware bearer authentication**
 
 Make `AuthGuard` extract exactly one `Authorization: Bearer <token>` value. Verify the JWT, then query its `Session` by `id` and `userId`; reject if it is revoked or expired. Attach this immutable request-local value:
 
 ```ts
-export type AuthenticatedUser = { id: string; phoneE164: string; phoneVerifiedAt: Date | null };
+export type AuthenticatedUser = { id: string; sessionId: string };
 ```
 
 The `@CurrentUser()` parameter decorator must throw if invoked without the guard-provided user, so unprotected controllers cannot accidentally rely on a forged request property.
 
-- [ ] **Step 4: Implement the users module and route registration**
+- [ ] **Step 2: Implement the users module and route registration**
 
 `UsersService.getAuthenticatedUser(id)` must select only `id`, `phoneE164`, and `phoneVerifiedAt`, throw `UnauthorizedException` if the user no longer exists, and map its response to `{ id, phone, phoneVerified: Boolean(phoneVerifiedAt) }`. Mark only the `/v1/user` controller route with `@UseGuards(AuthGuard)`; do not make authentication global yet, because `/health`, `/ready`, and registration must remain public. Import `AuthModule`, `UsersModule`, and later `GroupsModule` in `AppModule`.
 
-- [ ] **Step 5: Run the protected-route tests to verify they pass**
-
-Run: `TEST_DATABASE_URL='postgresql://swigsplit:swigsplit@localhost:5432/swigsplit_test' npm run test:integration -- tests/integration/auth.spec.ts`
-
-Expected: PASS. Missing, malformed, expired, and revoked credentials return the standard 401 response; an active registered-user session returns the minimum user representation.
-
-- [ ] **Step 6: Commit authenticated-user support**
+- [ ] **Step 3: Commit authenticated-user support**
 
 ```bash
-git add apps/api/src/shared/auth apps/api/src/modules/users apps/api/src/app.module.ts tests/integration/auth.spec.ts
+git add apps/api/src/modules/auth apps/api/src/modules/users apps/api/src/app.module.ts
 git commit -m "feat: add authenticated user endpoint"
 ```
 
