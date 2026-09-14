@@ -153,6 +153,16 @@ The service writes `outbox_events` in the same transaction as a successful money
 - Provide `/health` for process liveness and `/ready` for PostgreSQL/Redis readiness.
 - Keep secrets in environment-specific secret storage, never source control.
 
+## Deferred work and future scope
+
+The following items are intentionally not complete in the current private-beta implementation:
+
+- **Phone verification after private beta:** add the Redis-backed OTP send/verify flow, attempt and rate limits, SMS-provider integration, and enforcement of verified identity for group membership, expenses, settlements, and Instamart checkout.
+- **Deferred identity test infrastructure:** add the isolated `TEST_DATABASE_URL` Prisma helper and identity/group schema-invariant integration tests when database-backed test execution is enabled.
+- **Production transport security:** before any public staging or production deployment, expose the API through HTTPS. Prefer TLS termination at a reverse proxy/load balancer with certificate renewal, HTTP-to-HTTPS redirect, HSTS, and trusted-proxy configuration. Plain HTTP is only acceptable for local `localhost` development or a trusted internal hop behind that proxy.
+- **Remaining MVP work:** financial ledger and balances, Activity/notifications/outbox, lists, draft carts, Instamart integration, Home aggregates, and pilot-readiness operations remain on the implementation roadmap below.
+- **Post-MVP product scope:** coupons, percentage/share-based splits, item-level assignment, multiple payers, contact synchronisation, push notifications, categories, native mobile apps, multi-person debt optimisation, in-product payment ownership, paste-to-cart, recipe suggestions, and opt-in replenishment reminders remain future scope.
+
 ## MVP testing scope
 
 Keep automated testing focused on the highest-risk behavior:

@@ -20,6 +20,10 @@
 - Do not duplicate financial or permission rules in clients; clients request actions through this API.
 - All monetary amounts are stored and processed as integer paise.
 
+## Build policy
+
+- Do not run incremental builds or any build command. The user runs builds.
+
 ## Reference
 
 Read `../docs/2026-08-31-swigsplit-design.md` before implementing product behaviour.
