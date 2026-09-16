@@ -42,7 +42,11 @@ export class AuthService {
     input: RegisterInput,
   ): Promise<{ user: User; session: { id: string; userId: string; refreshToken: string } }> {
     return this.prisma.$transaction(async (tx) => {
-      const user = await this.users.findByPhone(tx, input.phone) ?? await this.users.create(tx, input.phone);
+      const existingUser = await this.users.findByPhone(tx, input.phone);
+      if (existingUser) {
+        throw new ConflictException("An account already exists for this phone. Authenticate and redeem the invite instead");
+      }
+      const user = await this.users.create(tx, input.phone);
       if (input.inviteToken) {
         if (!this.inviteRedemption) {
           throw new ConflictException("Invite redemption is not available");

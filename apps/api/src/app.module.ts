@@ -4,6 +4,8 @@ import { DatabaseModule } from "./shared/database/database.module.js";
 import { HealthModule } from "./modules/health/health.module.js";
 import { AuthModule } from "./modules/auth/auth.module.js";
 import { UsersModule } from "./modules/users/users.module.js";
+import { GroupsModule } from "./modules/groups/groups.module.js";
+import { InvitationsModule } from "./modules/invitations/invitations.module.js";
 
-@Module({ imports: [ConfigModule, DatabaseModule, AuthModule, HealthModule, UsersModule] })
+@Module({ imports: [ConfigModule, DatabaseModule, AuthModule, HealthModule, UsersModule, GroupsModule, InvitationsModule] })
 export class AppModule {}

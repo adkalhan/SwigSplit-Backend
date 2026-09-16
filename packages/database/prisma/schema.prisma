@@ -27,7 +27,6 @@ model User {
   updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
   sessions        Session[]
   memberships     GroupMember[]
-  sentInvites     Invite[]      @relation("InviteSender")
 
   @@map("users")
 }
@@ -49,13 +48,16 @@ model Session {
 }
 
 model Group {
-  id        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name      String
-  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
-  members   GroupMember[]
-  invites   Invite[]
+  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name       String
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  archivedAt DateTime?     @map("archived_at") @db.Timestamptz(6)
+  purgeAfter DateTime?     @map("purge_after") @db.Timestamptz(6)
+  members    GroupMember[]
+  invites    group_invites[]
 
+  @@index([purgeAfter])
   @@map("groups")
 }
 
@@ -74,11 +76,9 @@ model GroupMember {
   @@map("group_members")
 }
 
-model Invite {
+model group_invites {
   id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   groupId         String       @map("group_id") @db.Uuid
-  phoneE164       String       @map("phone_e164")
-  invitedByUserId String       @map("invited_by_user_id") @db.Uuid
   tokenHash       String       @unique @map("token_hash")
   status          InviteStatus @default(PENDING)
   expiresAt       DateTime     @map("expires_at") @db.Timestamptz(6)
@@ -86,8 +86,20 @@ model Invite {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
   group           Group        @relation(fields: [groupId], references: [id], onDelete: Restrict)
-  invitedBy       User         @relation("InviteSender", fields: [invitedByUserId], references: [id], onDelete: Restrict)
 
-  @@index([groupId, phoneE164, status], map: "invites_group_phone_status_idx")
-  @@map("invites")
+  @@index([groupId, status])
+  @@map("group_invites")
+}
+
+model app_invites {
+  id         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tokenHash  String       @unique @map("token_hash")
+  status     InviteStatus @default(PENDING)
+  expiresAt  DateTime     @map("expires_at") @db.Timestamptz(6)
+  acceptedAt DateTime?    @map("accepted_at") @db.Timestamptz(6)
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status, expiresAt])
+  @@map("app_invites")
 }

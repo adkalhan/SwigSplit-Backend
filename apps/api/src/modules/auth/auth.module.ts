@@ -5,10 +5,11 @@ import { AuthService } from "./auth.service.js";
 import { SessionService } from "./session.service.js";
 import { UsersModule } from "../users/users.module.js";
 import { TokenService } from "./token.service.js";
+import { InvitationsModule } from "../invitations/invitations.module.js";
 
 @Global()
 @Module({
-  imports: [UsersModule],
+  imports: [UsersModule, InvitationsModule],
   controllers: [AuthController],
   providers: [SessionService, TokenService, AuthGuard, AuthService],
   exports: [SessionService, TokenService, AuthGuard, AuthService],

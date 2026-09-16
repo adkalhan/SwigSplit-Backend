@@ -6,6 +6,7 @@ const environmentSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
   CORS_ORIGINS: z.string().min(1),
+  APP_WEB_URL: z.string().url().refine((value) => new URL(value).protocol === "https:", "APP_WEB_URL must use HTTPS"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(1_048_576),
   ACCESS_TOKEN_SECRET: z.string().min(32),

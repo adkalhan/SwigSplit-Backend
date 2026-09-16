@@ -4,7 +4,7 @@
 
 **Goal:** Add no-OTP phone registration, rotating server-side sessions, authenticated-user retrieval, and separate app- and group-invitation lifecycles to the Task 1 backend foundation; OTP verification follows after the private beta.
 
-**Architecture:** During the private beta, registration accepts an E.164 phone number without OTP and creates or retrieves that user before issuing a short-lived signed access token and rotating opaque refresh token. Prisma is the authoritative store for users, sessions, groups, separate `AppInvite` and `GroupInvite` records, and membership history. OTP later changes the registration/verification step without changing the session or group modules. Group services authorize each mutation and lock the group row before adding or reactivating a member, so the twenty-active-member limit cannot be exceeded concurrently.
+**Architecture:** During the private beta, registration accepts an unused E.164 phone number without OTP and creates that user before issuing a short-lived signed access token and rotating opaque refresh token. A duplicate phone is rejected; an existing account redeems an invite only while authenticated. Prisma is the authoritative store for users, sessions, groups, separate `AppInvite` and `GroupInvite` records, and membership history. OTP later changes the registration/verification step without changing the session or group modules. Group services authorize each mutation and lock the group row before adding or reactivating a member, so the twenty-active-member limit cannot be exceeded concurrently.
 
 **Tech Stack:** TypeScript, NestJS 11, Fastify 5, PostgreSQL 16, Prisma 6, Redis/ioredis, Zod, `jose`, Vitest, Nest testing utilities.
 
@@ -17,10 +17,10 @@
 - All API endpoints added here are JSON REST endpoints below `/v1`; `GET /v1/user` returns the authenticated user.
 - Production participants must have a verified SwigSplit account before participating in expenses. During the private beta, any registered user may participate without a populated `users.phone_verified_at` value.
 - `GroupInvite` and `AppInvite` are separate concepts. An app invite never stores a group ID and can never grant group membership.
-- A current group member generates a bearer `GroupInvite` link without supplying or storing a recipient phone number. The backend persists only the group, creator, token hash, and expiry; the link may be sent through any channel.
-- The recipient enters their phone number after opening the link. Private-beta registration creates or retrieves that user and redeems the link in one transaction. A `GroupInvite` redemption adds/reactivates that account's membership, enforces the 20-active-member cap, and creates the corresponding membership Activity/notification effects.
-- An app-only invite is the same bearer-link lifecycle without a group association. It stores only token lifecycle data; redemption creates or retrieves the account but never creates group membership.
-- Invite creation cannot infer whether the eventual recipient already has an account. Existing users are added only when they authenticate/register through the link; new users are created and added during that same redemption flow.
+- A current group member generates a bearer `GroupInvite` link without supplying or storing a recipient phone number. The backend persists only the group, token hash, and expiry; the link may be sent through any channel. Invite-creator audit attribution is deferred.
+- The recipient enters their phone number after opening the link. A new phone number is registered and redeems the link in one transaction. An existing account must authenticate using its existing session, then redeem through the authenticated invite-redemption endpoint. A `GroupInvite` redemption adds/reactivates that account's membership and enforces the 20-active-member cap.
+- An app-only invite is the same bearer-link lifecycle without a group association. It stores only token lifecycle data; redemption creates a new account or, for an authenticated existing account, marks only the app invite accepted; it never creates group membership.
+- Invite creation cannot infer whether the eventual recipient already has an account. Existing users are added only when they redeem through an authenticated session; new users are created and added during registration redemption.
 - Any current active group member may invite or remove a member.
 - Removal prevents future default participation but must retain the single membership record and its historical timestamps; re-adding reactivates that record.
 - A group may have at most 20 active members, enforced in the database transaction, not only by an application-side pre-check.
@@ -64,10 +64,10 @@ apps/api/src/
        session.service.ts,token.service.ts,auth.schemas.ts}
     users/{users.module.ts,users.controller.ts,users.service.ts}
     groups/
-      {groups.module.ts,groups.controller.ts,groups.service.ts,
-       group-invitations.service.ts,groups.schemas.ts,group-membership.service.ts}
+      {groups.module.ts,groups.controller.ts,groups.service.ts,group-membership.service.ts,dto/}
     invitations/
-      {invitations.module.ts,app-invitations.service.ts,invite-redemption.port.ts,invite-token.service.ts}
+      {invitations.module.ts,invitations.service.ts,invite-token.service.ts,
+       invitations.controller.ts,dto/}
 packages/database/prisma/
   schema.prisma
   migrations/<timestamp>_identity_and_invites/migration.sql
@@ -83,7 +83,7 @@ tests/
 - Each module owns its controllers, schemas, services, unit tests, and module-specific integration tests. It may depend only on shared infrastructure (`PrismaService`, configuration, errors, and request validation) and explicit interfaces exported by another module.
 - `AuthModule` exports `AuthGuard`, `CurrentUser`, and the `AuthenticatedUser` type. Other modules must receive the current user as an argument; they must not call `AuthService` or query sessions directly.
 - `GroupsModule` exports `GroupMembershipService.requireActiveMember(groupId, userId)`. Future expense, list, and cart modules use this interface rather than its controllers or Prisma queries.
-- `InvitationsModule` exports `InviteRedemptionPort.redeem(tx, inviteToken, userId): Promise<void>`, where `tx` is Prisma's transaction client. It resolves an `AppInvite` or `GroupInvite` through a shared token utility; only the group-invite branch calls `GroupMembershipService.addOrReactivate`. `AuthModule` calls only this interface inside its registration transaction; it does not import invitation repositories or membership implementation details.
+- `InvitationsModule` exports `InviteRedemptionPort.redeem(tx, inviteToken, userId): Promise<void>`, where `tx` is Prisma's transaction client. It resolves an `AppInvite` or `GroupInvite` through a shared token utility; the group-invite branch explicitly calls `GroupMembershipService.add` for a new membership or `reactivate` for a removed membership. `AuthModule` calls only this interface inside its registration transaction; it does not import invitation repositories or membership implementation details.
 - Unit tests mock imported interfaces and test a single service without an HTTP server or database. Each module additionally has an integration test that boots only that module plus test infrastructure and exercises its own routes.
 - Modules are therefore independently testable and replaceable at their public interface. They are not dependency-free: groups correctly depend on the authenticated user identity, but that dependency is narrow, explicit, and mockable.
 
@@ -355,49 +355,24 @@ git commit -m "feat: add authenticated user endpoint"
 **Files:**
 - Create: `apps/api/src/modules/groups/{groups.module.ts,groups.controller.ts,groups.service.ts,group-membership.service.ts,groups.schemas.ts}`
 - Modify: `apps/api/src/app.module.ts`
-- Test: `tests/integration/groups.spec.ts`
 
 **Interfaces:**
 - Consumes: `AuthenticatedUser`, `PrismaService`, and Task 1 `GroupMember` records.
-- Produces: `GroupsService.create(ownerId, input)`, `GroupMembershipService.requireActiveMember(groupId, userId)`, and `GroupMembershipService.addOrReactivate(groupId, userId)`. Tasks 6 and future expense/list modules consume `requireActiveMember`.
+- Produces full group CRUD: `GroupsService.create`, `findAll`, `findOne`, `update`, `archive`, `restore`, and `deletePermanently`, plus `GroupMembershipService.requireActiveMember(groupId, userId)`. Task 6 adds membership creation/reactivation; future expense/list modules consume `requireActiveMember`.
 
-- [ ] **Step 1: Write failing group-create and membership tests**
-
-Append these cases to `tests/integration/groups.spec.ts`:
-
-```ts
-it("creates a group and makes its registered creator an active member", async () => {
-  const response = await requestAs(registeredUser, { method: "POST", url: "/v1/groups", payload: { name: "Flat 4B" } });
-  expect(response.statusCode).toBe(201);
-  expect(response.json()).toMatchObject({ name: "Flat 4B", members: [{ userId: registeredUser.id, status: "active" }] });
-});
-
-it("rejects access by a user who is not an active group member", async () => {
-  const response = await requestAs(outsider, { method: "GET", url: `/v1/groups/${group.id}` });
-  expect(response.statusCode).toBe(403);
-});
-```
-
-Add validation cases: blank/over-80-character group names return `400`; a caller without a valid beta session cannot create a group; and a removed member receives `403` for current group routes.
-
-- [ ] **Step 2: Run the group tests to verify they fail**
-
-Run: `TEST_DATABASE_URL='postgresql://swigsplit:swigsplit@localhost:5432/swigsplit_test' npm run test:integration -- tests/integration/groups.spec.ts`
-
-Expected: FAIL because group routes and membership authorization do not exist.
-
-- [ ] **Step 3: Implement group schemas and membership service**
+- [ ] **Step 1: Implement group schemas and membership service**
 
 Use these input schemas:
 
 ```ts
 export const createGroupSchema = z.object({ name: z.string().trim().min(1).max(80) });
+export const updateGroupSchema = createGroupSchema;
 export const groupIdSchema = z.string().uuid();
 ```
 
 `GroupMembershipService.requireActiveMember` must look up `(groupId, userId)` with `status: ACTIVE` and throw `ForbiddenException("You are not an active member of this group")` otherwise. `GroupsService.create` must require an authenticated registered user and create `Group` and its creator membership in a single Prisma transaction.
 
-- [ ] **Step 4: Implement protected group controllers**
+- [ ] **Step 2: Implement protected group controllers**
 
 Expose and protect these endpoints:
 
@@ -405,72 +380,34 @@ Expose and protect these endpoints:
 POST /v1/groups              { name } -> 201 GroupDto
 GET  /v1/groups              -> 200 GroupSummaryDto[]
 GET  /v1/groups/:groupId     -> 200 GroupDto
+PATCH /v1/groups/:groupId    { name } -> 200 GroupDto
+DELETE /v1/groups/:groupId   -> 204 (archive for 30 days)
+POST /v1/groups/:groupId/restore -> 200 GroupDto
+DELETE /v1/groups/:groupId/permanently -> 204
 ```
 
-`GroupDto` should expose `{ id, name, createdAt, members: [{ userId, phone, status, joinedAt, lastJoinedAt }] }`; never expose session/token data. List queries must return only groups where the requester is currently `ACTIVE`.
+`GroupDto` should expose `{ id, name, createdAt, members: [{ userId, phone, status, joinedAt, lastJoinedAt }] }`; never expose session/token data. List queries must return only non-archived groups where the requester is currently `ACTIVE`. Any active member may rename, archive, restore during its 30-day recovery period, or permanently delete a group. Archiving sets `archivedAt` and `purgeAfter`; it hides the group but retains members and records. Enqueue a durable `purge-group` worker job for the deadline. Restoration clears both timestamps and cancels the job. The worker permanently deletes a still-archived, due group and its group-owned records.
 
-- [ ] **Step 5: Run the group tests to verify they pass**
-
-Run: `TEST_DATABASE_URL='postgresql://swigsplit:swigsplit@localhost:5432/swigsplit_test' npm run test:integration -- tests/integration/groups.spec.ts`
-
-Expected: PASS. Group creation is atomic and all current-group reads are isolated to active members.
-
-- [ ] **Step 6: Commit group creation and authorization**
+- [ ] **Step 3: Commit group creation and authorization**
 
 ```bash
-git add apps/api/src/modules/groups apps/api/src/app.module.ts tests/integration/groups.spec.ts
+git add apps/api/src/modules/groups apps/api/src/app.module.ts
 git commit -m "feat: add groups and membership authorization"
 ```
 
 ### Task 6: Implement app invites, group invites, removal, and re-add lifecycle
 
 **Files:**
-- Create: `apps/api/src/modules/invitations/{invitations.module.ts,app-invitations.service.ts,invite-redemption.port.ts,invite-token.service.ts}`
-- Create: `apps/api/src/modules/groups/group-invitations.service.ts`
-- Modify: `apps/api/src/modules/groups/{groups.controller.ts,groups.service.ts,group-membership.service.ts,groups.schemas.ts}`
-- Test: `tests/integration/groups.spec.ts`, `tests/integration/auth.spec.ts`
+- Create: `apps/api/src/modules/invitations/{invitations.module.ts,invitations.controller.ts,invitations.service.ts,invite-token.service.ts,dto/}`
+- Modify: `packages/database/prisma/{schema.prisma,migrations/<timestamp>_split_app_and_group_invites/migration.sql}`, `apps/api/src/modules/{auth,groups}`, and `apps/api/src/shared/config/environment.ts`
 
 **Interfaces:**
-- Consumes: `GroupMembershipService.requireActiveMember`, `GroupMembershipService.addOrReactivate`, authenticated request user, `GroupInvite`, `AppInvite`, and the durable Activity/notification writer.
-- Produces: `GroupInvitationsService.invite`, `AppInvitationsService.create`, `InviteRedemptionPort.redeem`, and `GroupsService.removeMember`. Future modules can rely on `GroupMember.status` and `removedAt` history.
+- Consumes: `GroupMembershipService.requireActiveMember`, `GroupMembershipService.add`, `GroupMembershipService.reactivate`, authenticated request user, `GroupInvite`, and `AppInvite`.
+- Produces: `InvitationsService.createGroupInvite`, `InvitationsService.createAppInvite`, `InviteRedemptionPort.redeem`, and `GroupsService.removeMember`. Future modules can rely on `GroupMember.status` and `removedAt` history.
 
-- [ ] **Step 1: Write failing invitation and lifecycle tests**
+- [ ] **Step 1: Implement locked capacity checks and membership transitions**
 
-Cover all three invitation flows:
-
-```ts
-it("adds an existing user only when they redeem a GroupInvite link", async () => {
-  const invite = await requestAs(member, { method: "POST", url: `/v1/groups/${group.id}/invites` });
-  const response = await register({ phone: existingUser.phoneE164, inviteToken: tokenFrom(invite) });
-  expect(response.statusCode).toBe(201);
-  expect(await activeMembership(group.id, existingUser.id)).toBe(true);
-});
-
-it("creates a GroupInvite without a recipient phone and joins a newly registered recipient", async () => {
-  const invite = await requestAs(member, { method: "POST", url: `/v1/groups/${group.id}/invites` });
-  expect(invite.json()).toMatchObject({ kind: "group", signupUrl: expect.stringContaining("/signup?invite=") });
-  await register({ phone: "+919876543211", inviteToken: tokenFrom(invite) });
-  expect(await activeMembershipForPhone(group.id, "+919876543211")).toBe(true);
-});
-
-it("redeems an AppInvite without granting group membership", async () => {
-  const invite = await requestAs(member, { method: "POST", url: "/v1/app-invites" });
-  await register({ phone: "+919876543212", inviteToken: tokenFrom(invite) });
-  expect(await membershipsForPhone("+919876543212")).toHaveLength(0);
-});
-```
-
-Also cover reactivation, the twenty-first concurrent active addition, membership Activity/notification effects, non-member requests (`403`), expired/reused links (`409`), and the registration race: create a group link, create the target user before redemption, then redeem and assert the transaction safely re-checks the user and membership state rather than inserting a duplicate or bypassing the cap.
-
-- [ ] **Step 2: Run the lifecycle tests to verify they fail**
-
-Run: `TEST_DATABASE_URL='postgresql://swigsplit:swigsplit@localhost:5432/swigsplit_test' npm run test:integration -- tests/integration/groups.spec.ts tests/integration/auth.spec.ts`
-
-Expected: FAIL because bearer-link creation, separate invite models, invite redemption, removal, re-add, effects, and capacity flows do not exist.
-
-- [ ] **Step 3: Implement locked capacity checks and membership transitions**
-
-Inside `addOrReactivate`, execute a serializable `$transaction`; first acquire a group row lock using a parameterized Prisma raw query:
+Inside both `add` and `reactivate`, execute a transaction; first acquire a group row lock using a parameterized Prisma raw query:
 
 ```ts
 await tx.$queryRaw`SELECT id FROM groups WHERE id = ${groupId}::uuid FOR UPDATE`;
@@ -478,9 +415,9 @@ const activeCount = await tx.groupMember.count({ where: { groupId, status: "ACTI
 if (activeCount >= 20) throw new ConflictException("This group already has 20 active members");
 ```
 
-Then either create the membership or update its existing row to `{ status: "ACTIVE", removedAt: null, lastJoinedAt: now }`. Do not insert another history row. Group membership is added only during `GroupInvite` redemption, where the appropriate membership Activity/notification effects are created atomically. `removeMember` must update only an active membership to `{ status: "REMOVED", removedAt: now }`; it must reject attempts to remove a non-active member and must not delete rows.
+`add` creates a new membership only; `reactivate` updates an existing removed row to `{ status: "ACTIVE", removedAt: null, lastJoinedAt: now }`. Do not insert another history row. Group membership is added only during `GroupInvite` redemption. `removeMember` must update only an active membership to `{ status: "REMOVED", removedAt: now }`; it must reject attempts to remove a non-active member and must not delete rows. Activity and notification writers are deferred until those modules exist.
 
-- [ ] **Step 4: Implement separate invitation creation and redemption**
+- [ ] **Step 2: Implement separate invitation creation and redemption**
 
 Invite creation accepts no recipient identifier. Pending invitations expire after seven days. `InviteTokenService` generates `randomBytes(32).toString("base64url")` values and stores only their SHA-256 hashes. It is shared by both invitation kinds but never decides permissions.
 
@@ -494,18 +431,12 @@ POST   /v1/app-invites                              -> 201 AppInviteDto
 DELETE /v1/groups/:groupId/members/:userId        -> 204
 ```
 
-`InviteRedemptionPort.redeem` runs inside the registration transaction. It locks and re-checks the matching `AppInvite` or `GroupInvite`, its `PENDING` status, expiry, and SHA-256 token hash after the user account has been obtained. For a `GroupInvite`, it additionally locks the group, re-checks the current membership, invokes `addOrReactivate`, accepts the redeemed invite, and creates membership Activity/notification effects atomically. This handles the race where the recipient already registered after link creation but before redemption. For an `AppInvite`, it marks only that app invite accepted; it must never read or write group membership. Expired, cancelled, accepted, or replayed links return `409`.
+`InviteRedemptionPort.redeem` runs inside the new-user registration transaction. It locks and re-checks the matching `AppInvite` or `GroupInvite`, its `PENDING` status, expiry, and SHA-256 token hash after the user account has been obtained. `POST /v1/invites/redeem` runs the same logic inside a transaction for an already authenticated user. For a `GroupInvite`, it additionally locks the group, re-checks the current membership, explicitly invokes `add` or `reactivate`, and accepts the invite atomically. This handles the race where a user registered after link creation but before redemption. For an `AppInvite`, it marks only that app invite accepted; it must never read or write group membership. Expired, cancelled, accepted, or replayed links return `409`.
 
-- [ ] **Step 5: Run lifecycle and concurrency tests to verify they pass**
-
-Run: `TEST_DATABASE_URL='postgresql://swigsplit:swigsplit@localhost:5432/swigsplit_test' npm run test:integration -- tests/integration/groups.spec.ts tests/integration/auth.spec.ts`
-
-Expected: PASS. Existing and new users join only by redeeming a group link; app-only links create no membership; membership effects are durable; and concurrent additions never exceed 20 active members.
-
-- [ ] **Step 6: Commit invitation and membership lifecycle behavior**
+- [ ] **Step 3: Commit invitation and membership lifecycle behavior**
 
 ```bash
-git add apps/api/src/modules/groups apps/api/src/modules/invitations tests/integration/{auth,groups}.spec.ts
+git add apps/api/src/modules/{auth,groups,invitations} packages/database/prisma apps/api/src/shared/config/environment.ts
 git commit -m "feat: add app and group invitation lifecycle"
 ```
 
@@ -571,4 +502,4 @@ git commit -m "docs: document verified identity and groups"
 - **Spec coverage:** All Task 2 responsibilities from the approved backend plan are mapped to Tasks 1–7. The design’s removed-member historical-access constraint is preserved in the schema; enforcement of record-level historical access begins with expense/activity modules in the next milestone because those records do not exist yet.
 - **Intentional scope boundary:** SMS-provider delivery is represented only as an OTP delivery adapter boundary. Selecting and integrating a production provider requires a separate credential and vendor decision, so this plan does not invent one.
 - **Placeholder scan:** No unresolved placeholders or unspecified error-handling steps remain.
-- **Type consistency:** All later tasks use `AuthenticatedUser`, `AuthResponse`, `GroupMembershipService.requireActiveMember`, and `GroupMembershipService.addOrReactivate` exactly as defined above.
+- **Type consistency:** All later tasks use `AuthenticatedUser`, `AuthResponse`, `GroupMembershipService.requireActiveMember`, `GroupMembershipService.add`, and `GroupMembershipService.reactivate` exactly as defined above.
