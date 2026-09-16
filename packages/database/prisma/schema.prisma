@@ -19,6 +19,11 @@ enum InviteStatus {
   EXPIRED
 }
 
+enum ExpenseStatus { ACTIVE DELETED }
+enum ExpenseSource { MANUAL }
+enum ExpenseRevisionEvent { CREATED UPDATED DELETED }
+enum IdempotencyStatus { PENDING COMPLETED }
+
 model User {
   id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   phoneE164       String        @unique @map("phone_e164")
@@ -27,6 +32,14 @@ model User {
   updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
   sessions        Session[]
   memberships     GroupMember[]
+  paidExpenses Expense[] @relation("ExpensePayer")
+  createdExpenses Expense[] @relation("ExpenseCreator")
+  expenseParticipations ExpenseParticipant[]
+  changedExpenseRevisions ExpenseRevision[] @relation("ExpenseRevisionActor")
+  sentSettlements SettlementRecord[] @relation("SettlementSender")
+  receivedSettlements SettlementRecord[] @relation("SettlementRecipient")
+  createdSettlements SettlementRecord[] @relation("SettlementCreator")
+  idempotencyRecords IdempotencyRecord[]
 
   @@map("users")
 }
@@ -56,6 +69,8 @@ model Group {
   purgeAfter DateTime?     @map("purge_after") @db.Timestamptz(6)
   members    GroupMember[]
   invites    group_invites[]
+  expenses Expense[]
+  settlementRecords SettlementRecord[]
 
   @@index([purgeAfter])
   @@map("groups")
@@ -102,4 +117,91 @@ model app_invites {
 
   @@index([status, expiresAt])
   @@map("app_invites")
+}
+
+model Expense {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId String? @map("group_id") @db.Uuid
+  title String
+  amountPaise BigInt @map("amount_paise") @db.BigInt
+  occurredOn DateTime @map("occurred_on") @db.Date
+  payerUserId String @map("payer_user_id") @db.Uuid
+  createdByUserId String @map("created_by_user_id") @db.Uuid
+  source ExpenseSource @default(MANUAL)
+  status ExpenseStatus @default(ACTIVE)
+  version Int @default(1)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  payer User @relation("ExpensePayer", fields: [payerUserId], references: [id], onDelete: Restrict)
+  createdBy User @relation("ExpenseCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  participants ExpenseParticipant[]
+  revisions ExpenseRevision[]
+  @@index([groupId, status, occurredOn])
+  @@index([payerUserId, status])
+  @@map("expenses")
+}
+
+model ExpenseParticipant {
+  expenseId String @map("expense_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  sharePaise BigInt @map("share_paise") @db.BigInt
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([expenseId, userId])
+  @@index([userId, expenseId])
+  @@map("expense_participants")
+}
+
+model ExpenseRevision {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  expenseId String @map("expense_id") @db.Uuid
+  version Int
+  event ExpenseRevisionEvent
+  changedByUserId String @map("changed_by_user_id") @db.Uuid
+  beforeSnapshot Json? @map("before_snapshot")
+  afterSnapshot Json @map("after_snapshot")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  changedBy User @relation("ExpenseRevisionActor", fields: [changedByUserId], references: [id], onDelete: Restrict)
+  @@unique([expenseId, version])
+  @@map("expense_revisions")
+}
+
+model SettlementRecord {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId String? @map("group_id") @db.Uuid
+  senderUserId String @map("sender_user_id") @db.Uuid
+  recipientUserId String @map("recipient_user_id") @db.Uuid
+  createdByUserId String @map("created_by_user_id") @db.Uuid
+  amountPaise BigInt @map("amount_paise") @db.BigInt
+  occurredOn DateTime @map("occurred_on") @db.Date
+  note String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  sender User @relation("SettlementSender", fields: [senderUserId], references: [id], onDelete: Restrict)
+  recipient User @relation("SettlementRecipient", fields: [recipientUserId], references: [id], onDelete: Restrict)
+  createdBy User @relation("SettlementCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  @@index([senderUserId, occurredOn])
+  @@index([recipientUserId, occurredOn])
+  @@index([groupId, occurredOn])
+  @@map("settlement_records")
+}
+
+model IdempotencyRecord {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  key String
+  requestHash String @map("request_hash")
+  status IdempotencyStatus @default(PENDING)
+  responseStatus Int? @map("response_status")
+  responseBody Json? @map("response_body")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@unique([userId, key])
+  @@index([expiresAt])
+  @@map("idempotency_records")
 }
