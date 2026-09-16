@@ -127,4 +127,6 @@ The Task 2 test-database helper is a prerequisite for these database-backed test
 - Contact discovery, contact permissions, and a stored friendship graph.
 - Participant acceptance/rejection or dispute workflows.
 - Percentage, unequal shorthand, or item-level split modes; Task 3 accepts exact shares only.
-- Multiple payers, debt simplification, payment-provider execution, Activity, notifications, and outbox delivery.
+- Multiple payers and payment-provider execution.
+- **Smart group debt settlement:** calculate a minimized set of suggested transfers across all members of one group (for example, replace several offsetting pairwise debts with fewer transfers). Suggestions must never rewrite expenses, shares, or settlement records; users explicitly record any resulting settlement.
+- Activity, notifications, and outbox delivery.
