@@ -99,27 +99,40 @@ For every active expense participant with share `s` and payer `p`, create a dire
 
 ## Module boundaries
 
-- `shared/money` owns rupee-string parsing, paise formatting, limits, and share-total validation.
-- `shared/idempotency` owns header parsing, request fingerprinting, claim/replay behavior, and persisted response mapping.
-- `modules/expenses` owns expense schemas, authorization, current-state persistence, revision snapshots, optimistic versions, and routes.
-- `modules/settlement-records` owns settlement schemas, authorization, persistence, and routes.
-- `modules/balances` owns read-only SQL aggregation and balance routes.
-- `GroupsModule` remains the sole owner of active group-membership checks through `GroupMembershipService`; financial modules must not duplicate its membership query logic.
+`MoneyModule` is the only financial module imported by `AppModule`. It composes the focused internal modules below without introducing a catch-all `MoneyService` that forwards every operation.
+
+```text
+modules/money/
+  money.module.ts
+  shared/
+    money.service.ts
+    idempotency.service.ts
+  expenses/
+    expenses.module.ts
+    expenses.service.ts
+    expenses.controller.ts
+    expense-revision.service.ts
+  settlement-records/
+    settlement-records.module.ts
+    settlement-records.service.ts
+    settlement-records.controller.ts
+  balances/
+    balances.module.ts
+    balances.service.ts
+    balances.controller.ts
+```
+
+- `MoneyModule` imports the three feature modules and exports only the narrow interfaces later product modules need.
+- `modules/money/shared/money.service.ts` owns rupee-string parsing, paise formatting, limits, and share-total validation.
+- `modules/money/shared/idempotency.service.ts` owns header parsing, request fingerprinting, claim/replay behavior, and persisted response mapping.
+- `modules/money/expenses` owns expense schemas, authorization, current-state persistence, revision snapshots, optimistic versions, and routes.
+- `modules/money/settlement-records` owns settlement schemas, authorization, persistence, and routes.
+- `modules/money/balances` owns read-only SQL aggregation and balance routes.
+- `GroupsModule` remains the sole owner of active group-membership checks through `GroupMembershipService`; money modules must not duplicate its membership query logic.
 
 ## Error behavior
 
 Invalid UUIDs, dates, money strings, missing fields, excess fields, malformed idempotency keys, non-positive amounts, duplicate participants, and share-total mismatches return the project-standard `400` error shape. Missing users, groups, expenses, or settlement records return `404` without leaking unrelated records. Unauthorized caller/resource combinations return `403`. A conflicting idempotency fingerprint, reuse of an in-progress key, invalid membership transition, or stale version returns `409`; stale-version bodies include the latest expense representation.
-
-## Testing strategy
-
-Tests focus on financial risk rather than broad CRUD coverage:
-
-- Unit tests prove exact rupee parsing/formatting, ₹1/₹100,000 boundaries, share summation, and no floating-point conversion.
-- Expense integration tests cover direct multi-user creation, group membership enforcement, participant authorization, create/update/delete revisions, soft-delete exclusion, idempotency replay/fingerprint conflict, and version conflicts.
-- Settlement-record/balance integration tests cover partial settlement, pairwise directional netting, group filtering, payer-as-participant treatment, and deleted-expense exclusion.
-- Concurrency-focused integration tests issue competing edits and same-key requests against an isolated test database.
-
-The Task 2 test-database helper is a prerequisite for these database-backed tests. It may be added as the first Task 3 implementation unit without retroactively expanding identity behavior.
 
 ## Deferred work
 
@@ -130,3 +143,4 @@ The Task 2 test-database helper is a prerequisite for these database-backed test
 - Multiple payers and payment-provider execution.
 - **Smart group debt settlement:** calculate a minimized set of suggested transfers across all members of one group (for example, replace several offsetting pairwise debts with fewer transfers). Suggestions must never rewrite expenses, shares, or settlement records; users explicitly record any resulting settlement.
 - Activity, notifications, and outbox delivery.
+- Automated unit, integration, and concurrency testing is deferred from the current Task 3 implementation scope.
