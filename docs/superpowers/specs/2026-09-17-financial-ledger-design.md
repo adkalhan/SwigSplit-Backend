@@ -25,14 +25,14 @@ GET    /v1/expenses/:expenseId
 PATCH  /v1/expenses/:expenseId
 DELETE /v1/expenses/:expenseId
 
-POST   /v1/payments
+POST   /v1/settlement-records
 GET    /v1/balances/friends
 GET    /v1/groups/:groupId/balance
 ```
 
 `POST /v1/expenses` accepts a title, exact decimal-rupee amount, ISO calendar date, payer user ID, optional group ID, and an array of exact participant shares expressed as user IDs and decimal-rupee strings. `PATCH` accepts only changed current-state fields plus the required current version. `DELETE` requires the required current version. The API returns `409 Conflict` with the current expense representation for a stale version.
 
-`POST /v1/payments` accepts sender user ID, recipient user ID, exact decimal-rupee amount, ISO calendar date, optional group ID, and optional note. A payment records a settlement only; it never invokes a banking or payment provider.
+`POST /v1/settlement-records` accepts sender user ID, recipient user ID, exact decimal-rupee amount, ISO calendar date, optional group ID, and optional note. A settlement record documents a settlement only; it never invokes a banking or payment provider.
 
 The API uses user UUIDs, never phone numbers, to identify direct-expense participants. This preserves a clean ledger boundary and avoids creating a phone-based account-discovery endpoint. Clients can use identities already available through authenticated product views; contact discovery is separate future product work.
 
@@ -44,19 +44,19 @@ For a group expense, the service verifies that the group exists and is not archi
 
 For a direct expense, every payer and participant must exist as a registered user. There is intentionally no friendship prerequisite and no recipient-acceptance workflow.
 
-A payment sender must be the authenticated caller. Its recipient must be a distinct registered user. If a group context is supplied, both parties must currently be active members of that group.
+A settlement-record sender must be the authenticated caller. Its recipient must be a distinct registered user. If a group context is supplied, both parties must currently be active members of that group.
 
 ## Financial invariants
 
 - Money enters the API as a canonical decimal rupee string and is parsed without JavaScript floating point.
 - Stored money is PostgreSQL `BIGINT` paise. API responses format paise back to canonical decimal rupee strings.
-- Every expense and payment amount is from ₹1.00 through ₹100,000.00 inclusive.
+- Every expense and settlement-record amount is greater than ₹0.00 and no more than ₹100,000.00. Because amounts are stored in paise, the smallest valid amount is ₹0.01.
 - An expense has exactly one payer and at least one participant.
 - Participant user IDs are distinct and their exact shares sum exactly to the expense amount.
 - The payer may also be a participant; their share represents their own portion and produces no debt to themselves.
-- A payment amount is positive and its sender and recipient differ.
+- A settlement-record amount is positive and its sender and recipient differ.
 - A current expense is either `ACTIVE` or `DELETED`. Deleted expenses and all of their shares are excluded from balance calculations.
-- Current balances derive only from active expense shares and append-only payments. There is no stored or mutable balance record.
+- Current balances derive only from active expense shares and append-only settlement records. There is no stored or mutable balance record.
 
 ## Persistence model
 
@@ -67,14 +67,14 @@ Task 3 adds the following PostgreSQL-backed records through Prisma and one migra
 | `Expense` | Current state: title, amount paise, occurred-on date, payer, optional group, source `MANUAL`, status, version, creator, deletion timestamp, and timestamps. |
 | `ExpenseParticipant` | One current exact share per `(expense, user)` pair. |
 | `ExpenseRevision` | Append-only immutable snapshot for create, update, and delete, including actor, version, before snapshot, and after snapshot. It is never a balance input. |
-| `Payment` | Append-only direct or group-context settlement with sender, recipient, amount paise, date, optional note, creator, and timestamps. |
-| `IdempotencyRecord` | Per-user mutation key, request fingerprint, pending/completed response state, returned status/body, and expiry. It prevents a network retry from recording another expense, edit, delete, or payment. |
+| `SettlementRecord` | Append-only direct or group-context settlement with sender, recipient, amount paise, date, optional note, creator, and timestamps. |
+| `IdempotencyRecord` | Per-user mutation key, request fingerprint, pending/completed response state, returned status/body, and expiry. It prevents a network retry from recording another expense, edit, delete, or settlement record. |
 
-The expense participant primary key is `(expenseId, userId)`. `Expense` indexes its optional group and active/deleted state; `Payment` indexes each party, optional group, and occurrence date. `IdempotencyRecord` has unique `(userId, key)` and stores a SHA-256 request fingerprint, not raw sensitive request data.
+The expense participant primary key is `(expenseId, userId)`. `Expense` indexes its optional group and active/deleted state; `SettlementRecord` indexes each party, optional group, and occurrence date. `IdempotencyRecord` has unique `(userId, key)` and stores a SHA-256 request fingerprint, not raw sensitive request data.
 
 Expense revisions serialize snapshots as JSON values containing only immutable audit-relevant fields: current expense state and ordered exact-share entries. Revision number matches the expense version recorded by that event. Creation records version `1`; each edit increments version; deletion increments version and records the deleted state.
 
-Task 3 does not create Activity, Notification, or Outbox records. Those models and their worker processing belong to Task 4. The expense and payment services expose narrow event payload construction seams only if Task 4 needs to attach transactional writers later; no fake outbox table or unprocessed job is introduced now.
+Task 3 does not create Activity, Notification, or Outbox records. Those models and their worker processing belong to Task 4. The expense and settlement-record services expose narrow event payload construction seams only if Task 4 needs to attach transactional writers later; no fake outbox table or unprocessed job is introduced now.
 
 ## Mutation flow and concurrency
 
@@ -84,7 +84,7 @@ Every financial mutation executes inside one serializable Prisma transaction:
 2. Claim or replay the caller's idempotency record. The same key with a different request fingerprint returns `409`; a completed matching record returns the stored response without reapplying the mutation.
 3. Load and authorize current users, group membership when applicable, and the current expense when editing or deleting.
 4. For an expense edit or deletion, condition the write on the submitted version. A failed conditional update loads the latest representation and returns `409 Conflict`.
-5. Write the expense/payment state, replacement participant set if applicable, and immutable revision in the same transaction.
+5. Write the expense/settlement-record state, replacement participant set if applicable, and immutable revision in the same transaction.
 6. Persist the successful HTTP response in the idempotency record before committing.
 
 Concurrent expense edits therefore allow only the transaction whose expected version still matches. A later writer receives the latest expense and must deliberately reapply its intended change. Concurrent retries of one idempotency key return one durable result.
@@ -93,22 +93,22 @@ Concurrent expense edits therefore allow only the transaction whose expected ver
 
 The balance module uses parameterized, tested PostgreSQL aggregation queries rather than a mutable balance table.
 
-For every active expense participant with share `s` and payer `p`, create a directed obligation `participant -> p` of `s`, except when the participant is `p`. For every payment from `a` to `b` of `x`, create a directed settlement `a -> b` of `x`. Aggregate all obligations and settlements by unordered user pair, net the two directions, then expose the remaining direction and paise amount.
+For every active expense participant with share `s` and payer `p`, create a directed obligation `participant -> p` of `s`, except when the participant is `p`. For every settlement record from `a` to `b` of `x`, create a directed settlement `a -> b` of `x`. Aggregate all obligations and settlements by unordered user pair, net the two directions, then expose the remaining direction and paise amount.
 
-`GET /v1/balances/friends` returns the authenticated user's net pairwise balances across both direct and group transactions. `GET /v1/groups/:groupId/balance` first requires current active membership, then returns the group's net pairwise balances using only expenses and payments whose `groupId` matches. Balance responses contain integer-safe decimal strings, never JavaScript numeric amounts.
+`GET /v1/balances/friends` returns the authenticated user's net pairwise balances across both direct and group transactions. `GET /v1/groups/:groupId/balance` first requires current active membership, then returns the group's net pairwise balances using only expenses and settlement records whose `groupId` matches. Balance responses contain integer-safe decimal strings, never JavaScript numeric amounts.
 
 ## Module boundaries
 
 - `shared/money` owns rupee-string parsing, paise formatting, limits, and share-total validation.
 - `shared/idempotency` owns header parsing, request fingerprinting, claim/replay behavior, and persisted response mapping.
 - `modules/expenses` owns expense schemas, authorization, current-state persistence, revision snapshots, optimistic versions, and routes.
-- `modules/payments` owns settlement schemas, authorization, persistence, and routes.
+- `modules/settlement-records` owns settlement schemas, authorization, persistence, and routes.
 - `modules/balances` owns read-only SQL aggregation and balance routes.
 - `GroupsModule` remains the sole owner of active group-membership checks through `GroupMembershipService`; financial modules must not duplicate its membership query logic.
 
 ## Error behavior
 
-Invalid UUIDs, dates, money strings, missing fields, excess fields, malformed idempotency keys, non-positive amounts, duplicate participants, and share-total mismatches return the project-standard `400` error shape. Missing users, groups, expenses, or payments return `404` without leaking unrelated records. Unauthorized caller/resource combinations return `403`. A conflicting idempotency fingerprint, reuse of an in-progress key, invalid membership transition, or stale version returns `409`; stale-version bodies include the latest expense representation.
+Invalid UUIDs, dates, money strings, missing fields, excess fields, malformed idempotency keys, non-positive amounts, duplicate participants, and share-total mismatches return the project-standard `400` error shape. Missing users, groups, expenses, or settlement records return `404` without leaking unrelated records. Unauthorized caller/resource combinations return `403`. A conflicting idempotency fingerprint, reuse of an in-progress key, invalid membership transition, or stale version returns `409`; stale-version bodies include the latest expense representation.
 
 ## Testing strategy
 
@@ -116,7 +116,7 @@ Tests focus on financial risk rather than broad CRUD coverage:
 
 - Unit tests prove exact rupee parsing/formatting, ₹1/₹100,000 boundaries, share summation, and no floating-point conversion.
 - Expense integration tests cover direct multi-user creation, group membership enforcement, participant authorization, create/update/delete revisions, soft-delete exclusion, idempotency replay/fingerprint conflict, and version conflicts.
-- Payment/balance integration tests cover partial settlement, pairwise directional netting, group filtering, payer-as-participant treatment, and deleted-expense exclusion.
+- Settlement-record/balance integration tests cover partial settlement, pairwise directional netting, group filtering, payer-as-participant treatment, and deleted-expense exclusion.
 - Concurrency-focused integration tests issue competing edits and same-key requests against an isolated test database.
 
 The Task 2 test-database helper is a prerequisite for these database-backed tests. It may be added as the first Task 3 implementation unit without retroactively expanding identity behavior.
