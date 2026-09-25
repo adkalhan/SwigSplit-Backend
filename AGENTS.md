@@ -24,6 +24,10 @@
 
 - Do not run incremental builds or any build command. The user runs builds.
 
+## Code readability
+
+- When adding or changing a function, add a short one-line comment directly above it explaining what it is used for. Skip only self-evident framework wiring such as an empty module class.
+
 ## Reference
 
 Read `../docs/2026-08-31-swigsplit-design.md` before implementing product behaviour.

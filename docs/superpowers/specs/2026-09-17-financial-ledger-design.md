@@ -26,6 +26,7 @@ PATCH  /v1/expenses/:expenseId
 DELETE /v1/expenses/:expenseId
 
 POST   /v1/settlement-records
+GET    /v1/balances/overview
 GET    /v1/balances/friends
 GET    /v1/groups/:groupId/balance
 ```
@@ -66,7 +67,7 @@ Task 3 adds the following PostgreSQL-backed records through Prisma and one migra
 | --- | --- |
 | `Expense` | Current state: title, amount paise, occurred-on date, payer, optional group, source `MANUAL`, status, version, creator, deletion timestamp, and timestamps. |
 | `ExpenseParticipant` | One current exact share per `(expense, user)` pair. |
-| `ExpenseRevision` | Append-only immutable snapshot for create, update, and delete, including actor, version, before snapshot, and after snapshot. It is never a balance input. |
+| `ExpenseRevision` | Append-only immutable resulting-state snapshot for create, update, and delete, including actor and version. It is never a balance input. |
 | `SettlementRecord` | Append-only direct or group-context settlement with sender, recipient, amount paise, date, optional note, creator, and timestamps. |
 | `IdempotencyRecord` | Per-user mutation key, request fingerprint, pending/completed response state, returned status/body, and expiry. It prevents a network retry from recording another expense, edit, delete, or settlement record. |
 
@@ -95,7 +96,7 @@ The balance module uses parameterized, tested PostgreSQL aggregation queries rat
 
 For every active expense participant with share `s` and payer `p`, create a directed obligation `participant -> p` of `s`, except when the participant is `p`. For every settlement record from `a` to `b` of `x`, create a directed settlement `a -> b` of `x`. Aggregate all obligations and settlements by unordered user pair, net the two directions, then expose the remaining direction and paise amount.
 
-`GET /v1/balances/friends` returns the authenticated user's net pairwise balances across both direct and group transactions. `GET /v1/groups/:groupId/balance` first requires current active membership, then returns the group's net pairwise balances using only expenses and settlement records whose `groupId` matches. Balance responses contain integer-safe decimal strings, never JavaScript numeric amounts.
+`GET /v1/balances/overview` returns one landing-page payload: global net pairwise friend balances across both direct and group transactions; for every group where the authenticated user is active, the user's owed/owing position and the group's total outstanding debt; and global owed/owing totals derived from the friend balances. Settlement records affect these calculations but are never returned as items. `GET /v1/balances/friends` returns only the authenticated user's net pairwise friend balances. `GET /v1/groups/:groupId/balance` first requires current active membership, then returns the group's net pairwise balances using only expenses and settlement records whose `groupId` matches. Balance responses contain integer-safe decimal strings, never JavaScript numeric amounts.
 
 ## Module boundaries
 

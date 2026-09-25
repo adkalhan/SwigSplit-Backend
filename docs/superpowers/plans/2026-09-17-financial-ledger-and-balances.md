@@ -147,7 +147,6 @@ Delete the now-unused placeholder directories `apps/api/src/modules/{expenses,pa
     version         Int
     event           ExpenseRevisionEvent
     changedByUserId String               @map("changed_by_user_id") @db.Uuid
-    beforeSnapshot  Json?                @map("before_snapshot")
     afterSnapshot   Json                 @map("after_snapshot")
     createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
     expense         Expense              @relation(fields: [expenseId], references: [id], onDelete: Restrict)
@@ -364,12 +363,11 @@ Delete the now-unused placeholder directories `apps/api/src/modules/{expenses,pa
     version: number;
     event: "CREATED" | "UPDATED" | "DELETED";
     changedByUserId: string;
-    before: ExpenseSnapshot | null;
-    after: ExpenseSnapshot;
+    snapshot: ExpenseSnapshot;
   }): Promise<void>;
   ```
 
-  On creation, persist `beforeSnapshot: null`; on update/delete, persist both the prior and resulting snapshots. No revision is queried by balances.
+  On creation, update, and deletion, persist only the resulting snapshot for that version. No revision is queried by balances.
 
 - [ ] **Step 3: Implement expense authorization helpers**
 
@@ -500,7 +498,7 @@ Delete the now-unused placeholder directories `apps/api/src/modules/{expenses,pa
 
 **Interfaces:**
 - Consumes: `AuthenticatedUser`, `AuthGuard`, `CurrentUser`, `PrismaService`, and `GroupMembershipService`.
-- Produces: `GET /v1/balances/friends`, `GET /v1/groups/:groupId/balance`, and exported `BalancesService` read methods.
+- Produces: `GET /v1/balances/overview`, `GET /v1/balances/friends`, `GET /v1/groups/:groupId/balance`, and exported `BalancesService` read methods.
 
 - [ ] **Step 1: Define balance response types using decimal strings**
 
@@ -610,6 +608,7 @@ Delete the now-unused placeholder directories `apps/api/src/modules/{expenses,pa
   PATCH  /v1/expenses/:expenseId
   DELETE /v1/expenses/:expenseId
   POST   /v1/settlement-records
+  GET    /v1/balances/overview
   GET    /v1/balances/friends
   GET    /v1/groups/:groupId/balance
   ```
