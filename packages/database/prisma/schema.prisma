@@ -19,10 +19,30 @@ enum InviteStatus {
   EXPIRED
 }
 
-enum ExpenseStatus { ACTIVE DELETED }
-enum ExpenseSource { MANUAL }
-enum ExpenseRevisionEvent { CREATED UPDATED DELETED }
-enum IdempotencyStatus { PENDING COMPLETED }
+enum ExpenseStatus {
+  ACTIVE
+  DELETED
+}
+
+enum ExpenseSource {
+  MANUAL
+}
+
+enum ExpenseRevisionEvent {
+  CREATED
+  UPDATED
+  DELETED
+}
+
+enum IdempotencyStatus {
+  PENDING
+  COMPLETED
+}
+
+enum DraftCartStatus {
+  ACTIVE
+  CHECKED_OUT
+}
 
 model User {
   id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -40,6 +60,11 @@ model User {
   receivedSettlements SettlementRecord[] @relation("SettlementRecipient")
   createdSettlements SettlementRecord[] @relation("SettlementCreator")
   idempotencyRecords IdempotencyRecord[]
+  activityEvents ActivityEvent[] @relation("ActivityRecipient")
+  actedActivityEvents ActivityEvent[] @relation("ActivityActor")
+  notifications Notification[]
+  ownedLists List[] @relation("ListOwner")
+  ownedDraftCarts DraftCart[] @relation("DraftCartOwner")
 
   @@map("users")
 }
@@ -71,6 +96,10 @@ model Group {
   invites    group_invites[]
   expenses Expense[]
   settlementRecords SettlementRecord[]
+  activityEvents ActivityEvent[]
+  notifications Notification[]
+  lists List[]
+  draftCarts DraftCart[]
 
   @@index([purgeAfter])
   @@map("groups")
@@ -203,4 +232,113 @@ model IdempotencyRecord {
   @@unique([userId, key])
   @@index([expiresAt])
   @@map("idempotency_records")
+}
+
+model ActivityEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  actorUserId String @map("actor_user_id") @db.Uuid
+  groupId String? @map("group_id") @db.Uuid
+  eventType String @map("event_type")
+  subjectType String @map("subject_type")
+  subjectId String @map("subject_id") @db.Uuid
+  payload Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user User @relation("ActivityRecipient", fields: [userId], references: [id], onDelete: Restrict)
+  actor User @relation("ActivityActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc), id(sort: Desc)])
+  @@map("activity_events")
+}
+
+model Notification {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+  groupId String? @map("group_id") @db.Uuid
+  eventType String @map("event_type")
+  subjectType String @map("subject_type")
+  subjectId String @map("subject_id") @db.Uuid
+  payload Json
+  readAt DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+
+  @@index([userId, readAt, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+model OutboxEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  eventType String @map("event_type")
+  aggregateType String @map("aggregate_type")
+  aggregateId String @map("aggregate_id") @db.Uuid
+  payload Json
+  availableAt DateTime @default(now()) @map("available_at") @db.Timestamptz(6)
+  lockedAt DateTime? @map("locked_at") @db.Timestamptz(6)
+  processedAt DateTime? @map("processed_at") @db.Timestamptz(6)
+  attemptCount Int @default(0) @map("attempt_count")
+  lastError String? @map("last_error")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([processedAt, availableAt])
+  @@map("outbox_events")
+}
+
+model List {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerUserId String @map("owner_user_id") @db.Uuid
+  groupId String? @map("group_id") @db.Uuid
+  name String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  owner User @relation("ListOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  items ListItem[]
+
+  @@index([groupId, updatedAt(sort: Desc)])
+  @@index([ownerUserId, groupId, updatedAt(sort: Desc)])
+  @@map("lists")
+}
+
+model ListItem {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  listId String @map("list_id") @db.Uuid
+  productName String @map("product_name")
+  quantity Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  list List @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  @@index([listId, createdAt])
+  @@map("list_items")
+}
+
+model DraftCart {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ownerUserId String @map("owner_user_id") @db.Uuid
+  groupId String @map("group_id") @db.Uuid
+  status DraftCartStatus @default(ACTIVE)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  owner User @relation("DraftCartOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  items DraftCartItem[]
+
+  @@map("draft_carts")
+}
+
+model DraftCartItem {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  draftCartId String @map("draft_cart_id") @db.Uuid
+  productName String @map("product_name")
+  quantity Int
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  draftCart DraftCart @relation(fields: [draftCartId], references: [id], onDelete: Cascade)
+
+  @@index([draftCartId, createdAt])
+  @@map("draft_cart_items")
 }
